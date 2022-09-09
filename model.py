@@ -1,18 +1,20 @@
-from cmath import pi
+import cmath
 from jax import numpy as np
 from jax import lax
 
+pi = cmath.pi
+
+
 class Model():
-  def __init__(self, num_states, converge_thres = 0.1):
-    self.num_states = num_states
-    self.converge_thres = converge_thres
+    def __init__(self, n_components=2, tol=0.1):
+        self.n_components = n_components
+        self.tol = tol
 
-    self.means_ = None
-    self.startprob_ = None
-    self.covars_ = None
-    self.transmat_ = None
+        self.means = None
+        self.startprob = None
+        self.covmat = None
+        self.transmat = None
 
-    # Constants
-    self.det_covars = None
-    self.inv_covars = None
-    self.pi = pi
+    def fit(self, data):
+        data = np.ndarray(data)
+

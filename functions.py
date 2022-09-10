@@ -2,37 +2,41 @@ from jaxtyping import Array, Float, PyTree
 from jax import numpy as np
 from jax import lax
 from jax import vmap
+import jax
 import cmath
 
 pi = cmath.pi
 
 
-def calc_log_likelihood(slc: Float[Array], mean: float, inv_covar: float, det_covar: float):
-    return (-0.5 * np.transpose(slc - mean) * inv_covar * (slc - mean)) \
-           - lax.log((2 * pi * det_covar) ** 0.5)
+def cll_mapped(data: Float[Array, "v_len h_len"], means: Float[Array, "num_states h_len"],
+               covmat: Float[Array, "num_states h_len h_len"]):
+
+    return vmap(jax.scipy.stats.multivariate_normal.logpdf, in_axes=(None, 0, 0),
+                out_axes=1)(data, means, covmat)
 
 
-def em_pass(data: Float[Array], means: Float[Array, "num_states"], inv_covars: Float[Array, "num_states"], det_covars:
-Float[Array, "num_states"], transmat: Float[Array, "num_states"]):
+@jax.jit
+def e_pass(data: Float[Array, "v_len h_len"], means: Float[Array, "num_states"], covmat,
+            transmat: Float[Array, "num_states"]):
+
     # Constants
     v_len, h_len = data.shape
     num_states = len(means)
 
-    new_transmat = np.zeros(num_states, num_states)
-    split_data = np.zeros(num_states, 1, h_len)
+    new_transmat = np.zeros((num_states, num_states))
+    split_data = np.zeros((num_states, 1, h_len))
     likelihood = 0
 
     # Calculate Likelihoods
-    ll_map = vmap(calc_log_likelihood(), in_axes=(None, 0, 0, 0))
-    likmat = vmap(ll_map, in_axes=(0, None, None, None), out_axes=0)(data[:, 1:], means[:, 1:], inv_covars, det_covars)
-    initial_state = np.argmax(likmat[0])
+    like_mat = cll_mapped(data[:, 1:], means[:, 1:], covmat[:, 1:, 1:])
+    initial_state = np.argmax(like_mat[0])
 
-    # Decode States and Recalculate Parameters
-    new_transmat = np.zeros(num_states, num_states)
-    split_data = np.zeros(num_states, 1, h_len)
+    # Decode States and Re-estimate Transition Matrix
+    new_transmat = np.zeros((num_states, num_states), int)
+    split_data = np.zeros((num_states, v_len - 1, h_len), float)
     likelihood = 0
 
-    init_carry = (likmat,
+    init_carry = (like_mat,
                   initial_state,
                   transmat,
                   new_transmat,
@@ -41,24 +45,31 @@ Float[Array, "num_states"], transmat: Float[Array, "num_states"]):
                   data)
 
     def body(i, carry):
-        likmat_, prev_state, transmat_, new_transmat_, split_data_, likelihood_, data_ = carry
+        like_mat_, prev_state, transmat_, new_transmat_, split_data_, likelihood_, data_ = carry
         slc = data_[i + 1]
 
-        trans_prob = np.log(transmat_) + likmat_[i]
+        trans_prob = np.log(transmat_[prev_state]) + like_mat_[i]
         curr_state = np.argmax(trans_prob)
-        new_transmat_[prev_state][curr_state] += 1
-        split_data_[curr_state] = np.vstack(split_data_[curr_state], slc)
+        new_transmat_.at[prev_state, curr_state].add(1)
+        split_data_.at[curr_state, i].set(slc)
         likelihood_ += trans_prob[curr_state]
 
-        return curr_state, transmat_, new_transmat_, split_data_, likelihood_, data_
+        return like_mat_, curr_state, transmat_, new_transmat_, split_data_, likelihood_, data_
 
-    _, _, num_states, split_data, likelihood, _ = lax.fori_loop(0, v_len - 1, body(), init_carry)
+    _, _, _, new_transmat, split_data, likelihood, _ = lax.fori_loop(0, v_len - 1, body, init_carry)
 
+    print(new_transmat)
+    print(split_data)
     split_data = split_data[:, :, 1:]
+    new_transmat = new_transmat / (v_len - 1)
 
-    new_covmat = vmap(np.cov(), in_axes=2)(split_data)
+    return new_transmat, split_data, likelihood
 
 
-def expectation_maximization(data: Float[Array], tol, covmat):
-    inv_covars = np.linalg.inv(covmat[1:, 1:])
-    det_covars = np.linalg.det(covmat[1:, 1:])
+def m_pass(split_data):
+    split_data_ = split_data[split_data != 0]
+    new_covmat = vmap(np.cov, in_axes=0)(split_data_)
+    new_means = vmap(np.mean, in_axes=0)(split_data_)
+
+    return new_means, new_covmat
+

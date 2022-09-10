@@ -3,3 +3,4 @@
 *.iml
 test.py
 *.pyc
+*.toml

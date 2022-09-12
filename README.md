@@ -1,1 +1,1 @@
-# Sequential-Hidden-Markov-Models
+# Sequential-Hidden-Markov-Model
